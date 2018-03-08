@@ -42,6 +42,7 @@ from hl7apy.factories import datatype_factory
 from hl7apy.base_datatypes import BaseDataType
 from hl7apy.consts import MLLP_ENCODING_CHARS
 from hl7apy.utils import iteritems
+from functools import lru_cache
 
 try:
     basestring = basestring
@@ -54,6 +55,7 @@ except NameError:
     xrange = range
 
 
+@lru_cache(256)
 def is_base_datatype(datatype, version=None):
     """
     Check if the given datatype is a base datatype of the specified version
@@ -84,6 +86,7 @@ def _remove_trailing(children):
     return children
 
 
+@lru_cache(256)
 def _valid_child_name(child_name, expected_parent):
     try:
         parent, index = child_name.split("_")
@@ -96,20 +99,23 @@ def _valid_child_name(child_name, expected_parent):
         return True
 
 
+RE_VALID_Z_FIELD_NAME = re.compile(r'^z[a-z1-9]{2}_\d+$', re.IGNORECASE)
+RE_VALID_Z_MESSAGE_NAME = re.compile(r'^z[a-z0-9]{2}_z[a-z0-9]{2}$', re.IGNORECASE)
+RE_VALID_Z_SEGMENT_NAME = re.compile(r'^z..$', re.IGNORECASE)
+
+
 def _valid_z_message_name(name):
     if name is None:
         return False
-    regex = '^z[a-z0-9]{2}_z[a-z0-9]{2}$'
-    return re.match(regex, name, re.IGNORECASE) is not None
+    return RE_VALID_Z_MESSAGE_NAME.match(name) is not None
 
 
 def _valid_z_segment_name(name):
-    return name.upper().startswith('Z') and len(name) == 3
+    return RE_VALID_Z_SEGMENT_NAME.match(name)
 
 
 def _valid_z_field_name(name):
-    regex = '^z[a-z1-9]{2}_\d+$'
-    return re.match(regex, name, re.IGNORECASE) is not None
+    return RE_VALID_Z_FIELD_NAME.match(name) is not None
 
 
 class ElementProxy(collections.Sequence):
@@ -125,7 +131,7 @@ class ElementProxy(collections.Sequence):
     >>> print(isinstance(m.msh.msh_7, ElementProxy))
     True
     """
-    cls_attrs = ('element_list', 'list', 'element_name')
+    cls_attrs = set(['element_list', 'list', 'element_name'])
 
     def __init__(self, element_list, element_name):
         self.element_name = element_name.upper()
@@ -232,15 +238,17 @@ class ElementList(collections.MutableSequence):
         :type child: :class:`Element <hl7apy.core.Element>`
         :param child: an instance of an :class:`Element <hl7apy.core.Element>` subclass
         """
-        if self._can_add_child(child):
-            try:
-                if by_name_index == -1:
-                    self.indexes[child.name].append(child)
-                else:
-                    self.indexes[child.name].insert(by_name_index, child)
-            except KeyError:
-                self.indexes[child.name] = [child]
-            self.list.insert(index, child)
+        if not self._can_add_child(child):
+            return
+
+        if child.name in self.indexes:
+            if by_name_index == -1:
+                self.indexes[child.name].append(child)
+            else:
+                self.indexes[child.name].insert(by_name_index, child)
+        else:
+            self.indexes[child.name] = [child]
+        self.list.insert(index, child)
 
     def append(self, child):
         """
@@ -249,19 +257,21 @@ class ElementList(collections.MutableSequence):
         :class:`Element <hl7apy.core.Element>`
         :param child: an instance of an :class:`Element <hl7apy.core.Element>` subclass
         """
-        if self._can_add_child(child):
-            if self.element == child.parent:
-                self._remove_from_traversal_index(child)
-                self.list.append(child)
-                try:
-                    self.indexes[child.name].append(child)
-                except KeyError:
-                    self.indexes[child.name] = [child]
-            elif self.element == child.traversal_parent:
-                try:
-                    self.traversal_indexes[child.name].append(child)
-                except KeyError:
-                    self.traversal_indexes[child.name] = [child]
+        if not self._can_add_child(child):
+            return
+
+        if self.element == child.parent:
+            self._remove_from_traversal_index(child)
+            self.list.append(child)
+            if child.name in self.indexes:
+                self.indexes[child.name].append(child)
+            else:
+                self.indexes[child.name] = [child]
+        elif self.element == child.traversal_parent:
+            if child.name in self.indexes:
+                self.traversal_indexes[child.name].append(child)
+            else:
+                self.traversal_indexes[child.name] = [child]
 
     def pop(self, index=0):
         child = super(ElementList, self).pop(index)
@@ -611,10 +621,10 @@ class Element(object):
     Base class for all HL7 elements. It is not meant to be directly instantiated.
     """
 
-    cls_attrs = ['name', 'validation_level', 'version', 'children', 'ordered_children',
-                 'table', 'long_name', 'value', '_value', 'parent',  '_parent', '_traversal_parent',
-                 'traversal_parent', 'child_classes', 'encoding_chars', 'structure_by_name',
-                 'structure_by_longname', 'repetitions', 'reference']
+    cls_attrs = set(['name', 'validation_level', 'version', 'children', 'ordered_children',
+                     'table', 'long_name', 'value', '_value', 'parent',  '_parent', '_traversal_parent',
+                     'traversal_parent', 'child_classes', 'encoding_chars', 'structure_by_name',
+                     'structure_by_longname', 'repetitions', 'reference'])
 
     def __init__(self, name=None, parent=None, reference=None, version=None,
                  validation_level=None, traversal_parent=None):
@@ -630,7 +640,7 @@ class Element(object):
 
         check_validation_level(validation_level)
         check_version(version)
-        
+
         self.validation_level = validation_level
         self.name = name.upper() if name is not None else None
         self.version = version
@@ -875,7 +885,7 @@ class SupportComplexDataType(Element):
     """
     Mixin for classes that support complex datatypes
     """
-    cls_attrs = Element.cls_attrs + ['_datatype', 'datatype', 'table', 'long_name', 'max_length']
+    cls_attrs = Element.cls_attrs | set(['_datatype', 'datatype', 'table', 'long_name', 'max_length'])
 
     def __init__(self):
 
@@ -1071,7 +1081,7 @@ class SubComponent(CanBeVaries):
     :param traversal_parent: the temporary parent used during traversal
     """
     child_classes = ()
-    cls_attrs = Element.cls_attrs + ['datatype', '_datatype', 'table', 'long_name', 'max_length']
+    cls_attrs = Element.cls_attrs | set(['datatype', '_datatype', 'table', 'long_name', 'max_length'])
 
     def __init__(self, name=None, datatype=None, value=None, parent=None,
                  reference=None, version=None, validation_level=None,
@@ -1553,8 +1563,8 @@ class Segment(Element):
     """
     child_classes = (Field,)
     child_parser = ('parse_field', 'parse_fields')
-    cls_attrs = Element.cls_attrs + ['allow_infinite_children', '_last_allowed_child_index',
-                                     '_last_child_index']
+    cls_attrs = Element.cls_attrs | set(['allow_infinite_children', '_last_allowed_child_index',
+                                         '_last_child_index'])
 
     def __init__(self, name=None, parent=None, reference=None, version=None,
                  validation_level=None, traversal_parent=None):

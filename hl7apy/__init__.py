@@ -24,6 +24,8 @@ import os
 import sys
 import collections
 import importlib
+from functools import lru_cache
+
 try:
     import cPickle as pickle
 except ImportError:
@@ -217,6 +219,7 @@ def set_default_encoding_chars(encoding_chars):
     _DEFAULT_ENCODING_CHARS = encoding_chars
 
 
+@lru_cache(256)
 def load_library(version):
     """
     Load the correct module according to the version

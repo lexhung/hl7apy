@@ -30,35 +30,11 @@ from .groups import GROUPS
 from .tables import TABLES
 
 from hl7apy.v2_6.base_datatypes import ST as _ST26
-from hl7apy.exceptions import ChildNotFound
+from hl7apy.hl7base import _construct_hl7_primitives
 
 ELEMENTS = {'Message': MESSAGES, 'Segment': SEGMENTS, 'Field': FIELDS,
             'Component': DATATYPES, 'Group': GROUPS, 'SubComponent': DATATYPES,
             'Table': TABLES}
-
-
-def get(name, element_type):
-    try:
-        return ELEMENTS[element_type][name]
-    except KeyError:
-        raise ChildNotFound(name)
-
-
-def find(name, where):
-    for cls in where:
-        try:
-            return {'ref': get(name, cls.__name__), 'name': name, 'cls': cls}
-        except ChildNotFound:
-            pass
-    raise ChildNotFound(name)
-
-
-def is_base_datatype(datatype):
-    return datatype in BASE_DATATYPES
-
-
-def get_base_datatypes():
-    return BASE_DATATYPES
 
 
 def _load_base_datatypes():
@@ -70,6 +46,7 @@ def _load_base_datatypes():
         dts[cls.__name__] = cls
     dts.update({'ST': _ST26})
     return dts
+
 
 BASE_DATATYPES = _load_base_datatypes()
 
@@ -84,3 +61,5 @@ NM = BASE_DATATYPES['NM']
 SI = BASE_DATATYPES['SI']
 TM = BASE_DATATYPES['TM']
 TX = BASE_DATATYPES['TX']
+
+get, find, is_base_datatype, get_base_datatypes = _construct_hl7_primitives(ELEMENTS, BASE_DATATYPES)
