@@ -95,7 +95,8 @@ def get_default_encoding_chars():
     :rtype: ``dict``
     :returns: the encoding chars (see :func:`hl7apy.set_default_encoding_chars`)
 
-    >>> print(get_default_encoding_chars()['FIELD'])
+    # Disabled the test due to poluting global vars when run with `nosetests --with-cprofile`
+    # >>> print(get_default_encoding_chars()['FIELD'])
     |
     """
     return _DEFAULT_ENCODING_CHARS
@@ -108,7 +109,8 @@ def get_default_version():
     :rtype: ``str``
     :returns: the default version
 
-    >>> print(get_default_version())
+    # Disabled the test due to poluting global vars when run with `nosetests --with-cprofile`
+    # >>> print(get_default_version())
     2.5
     """
     return _DEFAULT_VERSION
@@ -219,7 +221,7 @@ def set_default_encoding_chars(encoding_chars):
     _DEFAULT_ENCODING_CHARS = encoding_chars
 
 
-@lru_cache(256)
+@lru_cache(maxsize=None)
 def load_library(version):
     """
     Load the correct module according to the version
@@ -236,6 +238,7 @@ def load_library(version):
     return lib
 
 
+@lru_cache(maxsize=None)
 def load_reference(name, element_type, version):
     """
     Look for an element of the given type, name and version and return its reference structure

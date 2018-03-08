@@ -42,7 +42,7 @@ from hl7apy.factories import datatype_factory
 from hl7apy.base_datatypes import BaseDataType
 from hl7apy.consts import MLLP_ENCODING_CHARS
 from hl7apy.utils import iteritems
-from functools import lru_cache
+from .compat import lru_cache
 
 try:
     basestring = basestring
@@ -86,7 +86,7 @@ def _remove_trailing(children):
     return children
 
 
-@lru_cache(256)
+@lru_cache(maxsize=None)
 def _valid_child_name(child_name, expected_parent):
     try:
         parent, index = child_name.split("_")
@@ -167,17 +167,19 @@ class ElementProxy(collections.Sequence):
     def __setattr__(self, name, value):
         if name in self.cls_attrs:
             super(ElementProxy, self).__setattr__(name, value)
-        else:
+            return value
+
+        try:
+            element = self.list[0]
+        except IndexError:  # first child not found, create the element
             try:
-                element = self.list[0]
-            except IndexError:  # first child not found, create the element
-                try:
-                    element = self.traversal_list[0]
-                except IndexError:
-                    element = self.element_list.create_element(self.element_name, traversal_parent=True)
-            if name == 'value':
-                element.set_parent_to_traversal()
-            setattr(element, name, value)
+                element = self.traversal_list[0]
+            except IndexError:
+                element = self.element_list.create_element(self.element_name, traversal_parent=True)
+        if name == 'value':
+            element.set_parent_to_traversal()
+        setattr(element, name, value)
+        return value
 
     def __setitem__(self, index, value):
         self.element_list.set(self.element_name, value, index)
@@ -416,19 +418,25 @@ class ElementList(collections.MutableSequence):
         """
         if reference is None:
             reference = self.element.find_child_reference(name)
-        if reference is not None:
-            cls = reference['cls']
-            element_name = reference['name']
-            kwargs = {'reference': reference['ref'],
-                      'validation_level': self.element.validation_level,
-                      'version': self.element.version}
-            if not traversal_parent:
-                kwargs['parent'] = self.element
-            else:
-                kwargs['traversal_parent'] = self.element
-            return cls(element_name, **kwargs)
-        else:
+
+        if reference is None:
             raise ChildNotFound(name)
+
+        cls = reference['cls']
+        if traversal_parent:
+            return cls(
+                reference['name'],
+                reference=reference['ref'],
+                validation_level=self.element.validation_level,
+                version=self.element.version,
+                traversal_parent=self.element)
+
+        return cls(
+            reference['name'],
+            reference=reference['ref'],
+            validation_level=self.element.validation_level,
+            version=self.element.version,
+            parent=self.element)
 
     def _find_name(self, name):
         """
@@ -470,23 +478,23 @@ class ElementList(collections.MutableSequence):
                     return self.proxies[child_name]
 
     def _can_add_child(self, child):
-        if self.element._is_valid_child(child):
-            if child.parent != self.element and child.traversal_parent != self.element:  # avoid infinite recursion
-                child.parent = self.element
-            else:
-                # if validation is strict, check the child cardinality
-                if Validator.is_strict(self.element.validation_level):
-                    min_rep, max_rep = self.element.repetitions.get(child.name, (0, -1))
-                    if len(self.indexes.get(child.name, [])) + 1 > int(max_rep) and max_rep > -1:
-                        raise MaxChildLimitReached(self.element, child, max_rep)
-                if self.element.validation_level != child.validation_level:
-                    raise OperationNotAllowed('Cannot add a child with a different validation_level')
-                if self.element.version != child.version:
-                    raise OperationNotAllowed('Cannot add a child with a different HL7 version')
-                return True
-        else:
+        if not self.element._is_valid_child(child):
             raise ChildNotValid(child, self.element)
-        return False
+
+        if child.parent != self.element and child.traversal_parent != self.element:  # avoid infinite recursion
+            child.parent = self.element
+            return False
+
+        # if validation is strict, check the child cardinality
+        if Validator.is_strict(self.element.validation_level):
+            min_rep, max_rep = self.element.repetitions.get(child.name, (0, -1))
+            if len(self.indexes.get(child.name, [])) + 1 > int(max_rep) and max_rep > -1:
+                raise MaxChildLimitReached(self.element, child, max_rep)
+        if self.element.validation_level != child.validation_level:
+            raise OperationNotAllowed('Cannot add a child with a different validation_level')
+        if self.element.version != child.version:
+            raise OperationNotAllowed('Cannot add a child with a different HL7 version')
+        return True
 
     def _remove_from_index(self, child):
         try:
@@ -524,8 +532,75 @@ class ElementList(collections.MutableSequence):
         return repr(self.list)
 
 
-class ElementFinder(object):
+@lru_cache(maxsize=None)
+def _parse_structure(reference, version, child_classes):
+    """
+    Parse the given reference
 
+    :type element: :class:`Element <hl7apy.core.Element>`
+    :param element: element having the given reference structure
+
+    :param reference: the element structure from :func:`load_reference <hl7apy.load_reference>` or from a
+        message profile
+
+    :return: a dictionary containing the structure data
+    """
+    data = {
+        'reference': reference
+    }
+    if reference[0] == 'mp':
+        reference = reference[1:]
+        is_profile = True
+    else:
+        is_profile = False
+
+    content_type = reference[0]  # content type can be sequence, choice or leaf
+    if content_type in ('sequence', 'choice'):
+        children = reference[1] if is_profile is False else reference[2]
+        ordered_children = []
+        structure = {}
+        repetitions = {}
+        counters = collections.defaultdict(int)
+        for c in children:
+            if is_profile is False:
+                child_name, cardinality = c
+                k = child_name if child_name not in structure \
+                    else '{0}_{1}'.format(child_name, counters[child_name])
+                structure[k] = find_reference(child_name, child_classes, version)
+                counters[child_name] += 1
+            else:
+                child_name, cardinality, cls = c[2], c[4], c[5]
+                if child_name in structure:
+                    child_name = '{0}_{1}'.format(child_name, counters['child_name'])
+                structure[child_name] = {'name': child_name,
+                                         'cls': eval(cls),  # TODO: is there another way?
+                                         'ref': c}
+                counters[child_name] += 1
+            repetitions[child_name] = cardinality
+            ordered_children.append(child_name)
+        data['repetitions'] = repetitions
+        data['ordered_children'] = ordered_children
+        data['structure_by_name'] = structure
+        if is_profile is False:
+            data['structure_by_longname'] = {e['ref'][2]: e for e in structure.values()
+                                             if e['ref'][0] == 'leaf'}
+        else:
+            # in this case the len is 6 and not 5 as above because here the first is 'mp'
+            data['structure_by_longname'] = {e['ref'][7]: e for e in structure.values()
+                                             if e['ref'][1] == 'leaf' or len(e['ref']) > 6}
+
+    if content_type == 'leaf' or (is_profile and len(reference) > 5):
+        if is_profile is False:
+            datatype, long_name, table = reference[1:]
+        else:
+            datatype, long_name, table, max_length = reference[5:]
+        data['datatype'] = datatype
+        data['table'] = table
+        data['long_name'] = long_name
+    return data
+
+
+class ElementFinder(object):
     @staticmethod
     def get_structure(element, reference=None):
         """
@@ -546,74 +621,7 @@ class ElementFinder(object):
                 raise InvalidName(element.classname, element.name)
         if not isinstance(reference, collections.Sequence):
             raise Exception
-        return ElementFinder._parse_structure(element, reference)
-
-    @staticmethod
-    def _parse_structure(element, reference):
-        """
-        Parse the given reference
-
-        :type element: :class:`Element <hl7apy.core.Element>`
-        :param element: element having the given reference structure
-
-        :param reference: the element structure from :func:`load_reference <hl7apy.load_reference>` or from a
-            message profile
-
-        :return: a dictionary containing the structure data
-        """
-        data = {
-            'reference': reference
-        }
-        if reference[0] == 'mp':
-            reference = reference[1:]
-            is_profile = True
-        else:
-            is_profile = False
-
-        content_type = reference[0]  # content type can be sequence, choice or leaf
-        if content_type in ('sequence', 'choice'):
-            children = reference[1] if is_profile is False else reference[2]
-            ordered_children = []
-            structure = {}
-            repetitions = {}
-            counters = collections.defaultdict(int)
-            for c in children:
-                if is_profile is False:
-                    child_name, cardinality = c
-                    k = child_name if child_name not in structure \
-                        else '{0}_{1}'.format(child_name, counters[child_name])
-                    structure[k] = find_reference(child_name, element.child_classes, element.version)
-                    counters[child_name] += 1
-                else:
-                    child_name, cardinality, cls = c[2], c[4], c[5]
-                    if child_name in structure:
-                        child_name = '{0}_{1}'.format(child_name, counters['child_name'])
-                    structure[child_name] = {'name': child_name,
-                                             'cls': eval(cls),  # TODO: is there another way?
-                                             'ref': c}
-                    counters[child_name] += 1
-                repetitions[child_name] = cardinality
-                ordered_children.append(child_name)
-            data['repetitions'] = repetitions
-            data['ordered_children'] = ordered_children
-            data['structure_by_name'] = structure
-            if is_profile is False:
-                data['structure_by_longname'] = {e['ref'][2]: e for e in structure.values()
-                                                 if e['ref'][0] == 'leaf'}
-            else:
-                # in this case the len is 6 and not 5 as above because here the first is 'mp'
-                data['structure_by_longname'] = {e['ref'][7]: e for e in structure.values()
-                                                 if e['ref'][1] == 'leaf' or len(e['ref']) > 6}
-
-        if content_type == 'leaf' or (is_profile and len(reference) > 5):
-            if is_profile is False:
-                datatype, long_name, table = reference[1:]
-            else:
-                datatype, long_name, table, max_length = reference[5:]
-            data['datatype'] = datatype
-            data['table'] = table
-            data['long_name'] = long_name
-        return data
+        return _parse_structure(reference, element.version, element.child_classes)
 
 
 class Element(object):
@@ -833,9 +841,8 @@ class Element(object):
 
     def _is_valid_child(self, child):
         valid = child.classname in (c.__name__ for c in self.child_classes)
-        if valid:
-            if child.name is not None:
-                self.find_child_reference(child.name)
+        if valid and child.name is not None:
+            self.find_child_reference(child.name)
         return valid
 
     def _get_children(self, trailing=False):
