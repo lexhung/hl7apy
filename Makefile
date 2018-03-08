@@ -1,4 +1,4 @@
-TIMESTAMP=`date +"%Y%m%d.%s"`
+TIMESTAMP=$(shell date +"%Y%m%d.%s")
 run-flake8:
 	flake8 hl7apy
 
@@ -7,6 +7,7 @@ run-tests:
 
 run-profile:
 	nosetests tests hl7apy --with-cprofile --cprofile-stats-file=stats-$(TIMESTAMP).prof hl7apy
+	snakeviz stats-$(TIMESTAMP).prof
 
 install-deps:
 	pip install nose coverage flake8 nose-cprof

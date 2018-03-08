@@ -31,7 +31,28 @@ from types import FunctionType
 from hl7apy import load_library, get_default_validation_level, get_default_version
 from hl7apy.exceptions import InvalidDataType
 from hl7apy.utils import get_date_info, get_datetime_info, get_timestamp_info
+from .compat import lru_cache
 
+
+@lru_cache(None)
+def _get_factories(version):
+    lib = load_library(version)
+    base_datatypes = lib.get_base_datatypes()
+
+    factories = base_datatypes.copy()
+
+    if 'DT' in factories:
+        factories['DT'] = date_factory
+    if 'TM' in factories:
+        factories['TM'] = timestamp_factory
+    if 'DTM' in factories:
+        factories['DTM'] = datetime_factory
+    if 'NM' in factories:
+        factories['NM'] = numeric_factory
+    if 'SI' in factories:
+        factories['SI'] = sequence_id_factory
+
+    return factories, base_datatypes
 
 def datatype_factory(datatype, value, version=None, validation_level=None):
     """
@@ -74,23 +95,7 @@ def datatype_factory(datatype, value, version=None, validation_level=None):
     if version is None:
         version = get_default_version()
 
-    lib = load_library(version)
-
-    base_datatypes = lib.get_base_datatypes()
-
-    factories = base_datatypes.copy()
-
-    if 'DT' in factories:
-        factories['DT'] = date_factory
-    if 'TM' in factories:
-        factories['TM'] = timestamp_factory
-    if 'DTM' in factories:
-        factories['DTM'] = datetime_factory
-    if 'NM' in factories:
-        factories['NM'] = numeric_factory
-    if 'SI' in factories:
-        factories['SI'] = sequence_id_factory
-
+    factories, base_datatypes = _get_factories(version)
     try:
         factory = factories[datatype]
         if isinstance(factory, FunctionType):
