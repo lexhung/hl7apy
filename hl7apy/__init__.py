@@ -24,7 +24,7 @@ import os
 import sys
 import collections
 import importlib
-from functools import lru_cache
+from .compat import lru_cache
 
 try:
     import cPickle as pickle

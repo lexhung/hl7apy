@@ -8,6 +8,7 @@ syntax: glob
 *.orig
 */_trial_temp*/*
 *.DS_Store
+*.prof
 
 syntax: regexp
 build/
