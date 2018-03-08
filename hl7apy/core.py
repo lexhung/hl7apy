@@ -462,20 +462,16 @@ class ElementList(collections.MutableSequence):
 
         :return: an instance of :class:`ElementProxy <hl7apy.core.ElementProxy>` containing the results
         """
-        if name in self.indexes or name in self.traversal_indexes:
-            try:
-                return self.proxies[name]
-            except KeyError:
-                self.proxies[name] = ElementProxy(self, name)
-                return self.proxies[name]
-        else:  # child not found in the indexes dictionary (e.g. msh_9.message_code, msh_9.msh_9_1)
-            child_name = self._find_name(name)
-            if child_name is not None:
-                try:
-                    return self.proxies[child_name]
-                except KeyError:
-                    self.proxies[child_name] = ElementProxy(self, child_name)
-                    return self.proxies[child_name]
+        if not (name in self.indexes or name in self.traversal_indexes):
+            # child not found in the indexes dictionary (e.g. msh_9.message_code, msh_9.msh_9_1)
+            name = self._find_name(name)
+            if name is None:
+                return
+
+        if name not in self.proxies:
+            self.proxies[name] = ElementProxy(self, name)
+
+        return self.proxies[name]
 
     def _can_add_child(self, child):
         if not self.element._is_valid_child(child):
@@ -630,7 +626,7 @@ class Element(object):
     """
 
     cls_attrs = set(['name', 'validation_level', 'version', 'children', 'ordered_children',
-                     'table', 'long_name', 'value', '_value', 'parent',  '_parent', '_traversal_parent',
+                     'table', 'long_name', 'value', '_value', 'parent', '_parent', '_traversal_parent',
                      'traversal_parent', 'child_classes', 'encoding_chars', 'structure_by_name',
                      'structure_by_longname', 'repetitions', 'reference'])
 
@@ -867,14 +863,13 @@ class Element(object):
 
     def __setattr__(self, name, value):
         if name in self.cls_attrs:
-            children = []
             if name == 'children':
                 if not isinstance(value, ElementList):
-                    children = value
-                    value = ElementList(self)
+                    super(Element, self).__setattr__(name, ElementList(self))
+                    for c in value:
+                        self.add(c)
+                    return
             super(Element, self).__setattr__(name, value)
-            for c in children:
-                self.add(c)
         elif hasattr(self, 'children'):
             self.children.set(name, value, 0)
 
